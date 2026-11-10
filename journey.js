@@ -36,10 +36,20 @@
     var gr = g.createRadialGradient(64, 64, 0, 64, 64, 64); gr.addColorStop(0, inner); gr.addColorStop(1, outer);
     g.fillStyle = gr; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c);
   }
-  var glowTex = radialTex('rgba(255,255,255,1)', 'rgba(255,255,255,0)');
+  // brilho gerado pixel a pixel (cor sempre branca, só o alfa varia): evita o chuvisco colorido no Safari do iPhone
+  var glowTex = (function () { var N = 64, d = new Uint8Array(N * N * 4);
+    for (var y = 0; y < N; y++) for (var x = 0; x < N; x++) { var dx = (x + .5) / N * 2 - 1, dy = (y + .5) / N * 2 - 1, r = Math.min(1, Math.sqrt(dx * dx + dy * dy)), a = Math.pow(1 - r, 2), i = (y * N + x) * 4;
+      d[i] = d[i + 1] = d[i + 2] = 255; d[i + 3] = Math.round(a * 255); }
+    var t = new THREE.DataTexture(d, N, N, THREE.RGBAFormat); t.magFilter = t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true; return t; })();
+  // brilho calculado no próprio shader (sem textura): liso em qualquer aparelho, inclusive no Safari do iPhone
+  var glows = [], glowGeo = new THREE.PlaneGeometry(1, 1);
   function glowSprite(color, size, opacity) {
-    var m = new THREE.SpriteMaterial({ map: glowTex, color: color, transparent: true, opacity: opacity, blending: THREE.AdditiveBlending, depthWrite: false });
-    var s = new THREE.Sprite(m); s.scale.set(size, size, 1); return s;
+    var m = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+      uniforms: { c: { value: new THREE.Color(color) }, op: { value: opacity } },
+      vertexShader: 'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+      fragmentShader: 'precision highp float;uniform vec3 c;uniform float op;varying vec2 vUv;void main(){float r=clamp(length(vUv*2.-1.),0.,1.);float a=(1.-r)*(1.-r)*op;gl_FragColor=vec4(c,a);}' });
+    m.opacity = opacity;
+    var s = new THREE.Mesh(glowGeo, m); s.scale.set(size, size, 1); s.renderOrder = 5; glows.push(s); return s;
   }
 
   /* ---------- luz ---------- */
@@ -214,7 +224,7 @@
   var NP = mobile ? 160 : 420, pg = new THREE.BufferGeometry(), pp = new Float32Array(NP * 3), seeds = new Float32Array(NP);
   for (var q = 0; q < NP; q++) { pp[q * 3] = (Math.random() - .5) * 26; pp[q * 3 + 1] = Math.random() * 9; pp[q * 3 + 2] = 16 - Math.random() * 80; seeds[q] = Math.random() * 6.28; }
   pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
-  var particles = new THREE.Points(pg, new THREE.PointsMaterial({ color: '#B8FFB0', size: mobile ? .07 : .055, map: glowTex, transparent: true, opacity: .55, depthWrite: false, blending: THREE.AdditiveBlending }));
+  var particles = new THREE.Points(pg, new THREE.PointsMaterial({ color: '#B8FFB0', size: mobile ? .05 : .04, transparent: true, opacity: .55, depthWrite: false, blending: THREE.AdditiveBlending }));
   scene.add(particles);
 
   /* ---------- câmera: quadros-chave ao longo da rolagem ---------- */
@@ -263,7 +273,7 @@
   document.addEventListener('visibilitychange', function () { visible = !document.hidden; });
   window.addEventListener('tf-start', function () { started = true; });
   if (root.classList.contains('ui-in')) started = true; // o sinal pode ter chegado antes deste script
-  var tmpV = new THREE.Vector3();
+  var tmpV = new THREE.Vector3(), tmpQ = new THREE.Quaternion();
 
   function frame() {
     requestAnimationFrame(frame);
@@ -325,6 +335,7 @@
     // partículas lentas
     if (!reduce) { var ps = pg.attributes.position; for (var i = 0; i < NP; i++) { var y = ps.getY(i) + dt * .08; if (y > 9) y = 0; ps.setY(i, y); ps.setX(i, ps.getX(i) + Math.sin(t * .3 + seeds[i]) * dt * .03); } ps.needsUpdate = true; }
 
+    var cq = camera.quaternion; for (var gi = 0; gi < glows.length; gi++) { var gq = glows[gi]; gq.quaternion.copy(cq); if (gq.parent && gq.parent !== scene) { gq.parent.getWorldQuaternion(tmpQ); gq.quaternion.premultiply(tmpQ.invert()); } gq.material.uniforms.op.value = gq.material.opacity; }
     renderer.render(scene, camera);
   }
   emitProgress(.5);
